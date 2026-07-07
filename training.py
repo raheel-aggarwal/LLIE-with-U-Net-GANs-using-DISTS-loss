@@ -215,6 +215,24 @@ def _atomic_imwrite(path, img):
     os.replace(tmp_path, path)
 
 
+def _packed_cache_is_valid(path):
+    if not os.path.isfile(path):
+        return False
+    try:
+        arr = np.load(path, allow_pickle=False)
+    except Exception as e:
+        print(f"[cache] invalid packed cache {path}: {e}")
+        return False
+    return isinstance(arr, np.ndarray) and arr.ndim == 3 and arr.shape[2] == 4
+
+
+def _image_cache_is_valid(path):
+    if not os.path.isfile(path):
+        return False
+    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+    return img is not None and img.size > 0
+
+
 def ensure_cache_for_pair(short_base, long_base, cfg, build_missing=True):
     """Make sure the packed-.npy cache (short) and the sRGB .png caches
     (short + long) exist on disk for one pair, mirroring short/ and long/
@@ -238,12 +256,21 @@ def ensure_cache_for_pair(short_base, long_base, cfg, build_missing=True):
 
     if build_missing:
         bl, wl = d.get('black_level', 512), d.get('white_level', 16383)
-        if not os.path.isfile(packed_path):
+        if not _packed_cache_is_valid(packed_path):
+            if os.path.isfile(packed_path):
+                os.remove(packed_path)
+            print(f"[cache] rebuilding packed cache {packed_path}")
             _atomic_save_npy(packed_path, pack_raw_file(short_path, bl, wl).astype(np.float32))
-        if not os.path.isfile(short_rgb_path):
+        if not _image_cache_is_valid(short_rgb_path):
+            if os.path.isfile(short_rgb_path):
+                os.remove(short_rgb_path)
+            print(f"[cache] rebuilding short RGB cache {short_rgb_path}")
             srgb = demosaic_to_srgb_u16(short_path)
             _atomic_imwrite(short_rgb_path, cv2.cvtColor(srgb, cv2.COLOR_RGB2BGR))
-        if not os.path.isfile(long_rgb_path):
+        if not _image_cache_is_valid(long_rgb_path):
+            if os.path.isfile(long_rgb_path):
+                os.remove(long_rgb_path)
+            print(f"[cache] rebuilding long RGB cache {long_rgb_path}")
             lrgb = demosaic_to_srgb_u16(long_path)
             _atomic_imwrite(long_rgb_path, cv2.cvtColor(lrgb, cv2.COLOR_RGB2BGR))
 
@@ -288,7 +315,7 @@ class SIDDataset(Dataset):
         sb, lb = self.pairs[idx]
         paths = ensure_cache_for_pair(sb, lb, self.cfg, build_missing=True)
 
-        packed = np.load(paths['packed_path']).astype(np.float32)          # (h, w, 4), unamplified
+        packed = np.load(paths['packed_path'], allow_pickle=False).astype(np.float32)  # (h, w, 4), unamplified
         ratio = compute_ratio(paths['short_path'], paths['long_path'], self.ratio_cap)
         x = np.minimum(packed * ratio, 1.0)
 
@@ -613,9 +640,11 @@ def main():
 
     train_ds = SIDDataset(cfg, split='train')
     val_ds = SIDDataset(cfg, split='val')
+    num_workers = max(0, min(2, int(cfg['train'].get('num_workers', 0))))
+    print(f"[data] using {num_workers} DataLoader worker(s)")
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True,
-                               num_workers=cfg['train']['num_workers'], pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=2)
+                               num_workers=num_workers, pin_memory=True, drop_last=True)
+    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
 
     mc = cfg['model']
     G = AttentionUNetGenerator(in_channels=mc['in_channels'],
