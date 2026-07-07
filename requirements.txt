@@ -1,0 +1,63 @@
+# =============================================================================
+# Environment for: Attention U-Net GAN (SID Sony) — replication
+# Target GPU: NVIDIA L40 (Ada Lovelace, compute capability 8.9, 48GB)
+# Requires: NVIDIA driver >= 530.30 (CUDA 12.1 runtime) on the host.
+#            Verify with: nvidia-smi  (look at "CUDA Version" in top-right)
+# Python: 3.11 (3.10 also fine; avoid 3.13 — some deps below lack wheels there
+#          as of this writing)
+#
+# Install:
+#   python3.11 -m venv venv && source venv/bin/activate
+#   pip install --upgrade pip
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+#       --index-url https://download.pytorch.org/whl/cu121
+#   pip install -r requirements.txt
+#
+# (torch/vision/audio are intentionally installed separately from the extra
+#  index URL above — mixing that index with PyPI in one requirements file
+#  is unreliable with pip's resolver.)
+# =============================================================================
+
+# --- Raw image I/O ---
+rawpy==0.27.0                 # LibRaw wrapper; supports both numpy 1.x and 2.x
+imageio==2.36.1
+
+# --- Core numerics / arrays ---
+numpy==2.1.2
+scipy==1.14.1
+
+# --- Metrics ---
+scikit-image==0.24.0          # PSNR, SSIM
+lpips==0.1.4                  # LPIPS perceptual metric (paper's headline number)
+pytorch-msssim==1.0.0         # MS-SSIM loss term (Eq. 4 in the paper)
+
+# --- Image I/O / viz ---
+opencv-python-headless==4.10.0.84
+Pillow==11.0.0
+matplotlib==3.9.2
+
+# --- Training utilities ---
+tqdm==4.67.1
+tensorboard==2.18.0
+pyyaml==6.0.2
+einops==0.8.0                 # optional, handy for attention-gate reshape ops
+
+huggingface_hub==0.26.2
+
+# =============================================================================
+# Install separately (NOT via this file) with the CUDA 12.1 wheel index:
+#
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 \
+#       --index-url https://download.pytorch.org/whl/cu121
+#
+# This combination is a well-tested, widely-used pin (released Oct 2024) that
+# fully supports the L40's sm_89 architecture. If you'd rather track the
+# newest stable PyTorch instead of this conservative pin, swap in:
+#
+#   pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# (CUDA 12.8 wheel set; also supports the L40, driver >= 550 required.)
+# Both options work — 2.5.1+cu121 is the "battle-tested" choice, 2.10.0+cu128
+# is the "latest stable" choice. Don't mix cu121 torch with cu128 wheels of
+# anything else.
+# =============================================================================

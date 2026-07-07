@@ -1,0 +1,63 @@
+# =============================================================================
+# config.yaml — Attention U-Net GAN, SID Sony (see implementation_plan.md §5)
+# Every key here is read directly by training.py; don't rename without
+# updating the script. Values marked [ASSUMPTION] come from the plan, not
+# stated explicitly in the paper — tune freely.
+# =============================================================================
+
+data:
+  data_root: ./Sony              # folder containing short/, long/, list files
+  short_dirname: short                 # <data_root>/short/*.ARW  (input, short exposure)
+  long_dirname: long                   # <data_root>/long/*.ARW   (ground truth, long exposure)
+  short_rgb_dirname: short_rgb         # auto-built cache: sRGB demosaic of short/ (D condition)
+  long_rgb_dirname: long_rgb           # auto-built cache: sRGB demosaic of long/  (GT)
+  packed_cache_dirname: short_packed_cache   # auto-built cache: packed 4ch raw (.npy)
+
+  # Official SID split files, resolved relative to data_root. Set to null to
+  # fall back to the by-scene-id auto-split in get_split_pairs().
+  train_list: Sony_train_list.txt
+  val_list: Sony_val_list.txt
+  test_list: Sony_test_list.txt
+
+  exclude_bad_pairs: true              # drop scenes known to have misaligned GT
+  exclude_ids: [10034, 10045, 10172]   # upstream SID repo's flagged bad pairs
+
+  black_level: 512                     # Sony a7S II sensor black level
+  white_level: 16383                   # 14-bit ADC full scale
+  ratio_cap: 300.0                     # cap on gt_exposure/in_exposure amplification
+
+patch:
+  packed_patch_size: 512               # crop size on the packed 4ch input (-> 1024 on GT/cond)
+  augment: true                        # h-flip / v-flip / 90 deg transpose (train split only)
+
+model:
+  in_channels: 4                       # packed RGGB Bayer input
+  enc_channels: [32, 64, 128, 256]     # encoder stage widths (enc1..enc4)
+  bottleneck_channels: 512
+  disc_in_channels: 6                  # concat(cond[3ch], real_or_fake[3ch])
+  disc_base_channels: 64               # PatchDiscriminator conv1 width
+
+optim:
+  lr_g: 2.0e-5                         # paper, explicit (stated for G)
+  lr_d: 2.0e-5                         # [ASSUMPTION] paper doesn't give D's LR separately
+  beta1: 0.9                           # paper, explicit
+  beta2: 0.999                         # paper, explicit
+
+loss:
+  lambda_l1: 100.0                     # [ASSUMPTION] pix2pix convention
+  lambda_ms_ssim: 10.0                 # [ASSUMPTION]
+  lambda_rec_total: 1.0                # weight of L_rec block vs L_adv [ASSUMPTION]
+  lambda_adv: 1.0                      # weight of L_adv in G's total loss
+
+train:
+  seed: 42
+  output_dir: ./runs/sony_default      # models/, samples/, tb_logs/ all live under here
+  epochs: 500                          # paper, explicit
+  batch_size: 4                        # [ASSUMPTION] not specified; fits L40 48GB at 1024^2 GT
+  num_workers: 8
+  resume: true                         # resume from <output_dir>/latest.pt if present
+
+  log_every: 100                       # steps between scalar log prints / TB writes
+  sample_every: 500                    # steps between triptych sample images
+  val_every_epochs: 5                  # epochs between PSNR/SSIM validation passes
+  save_every_epochs: 5                 # epochs between latest.pt + models/epoch_XXXX saves
