@@ -283,59 +283,91 @@ def prepare_cache(pairs_by_split, cfg):
             print(f"  [{i + 1}/{len(todo)}] cached")
 
 
-# =============================================================================
-# Dataset
-# =============================================================================
 class SIDDataset(Dataset):
-    def __init__(self, cfg, split='train'):
+    def __init__(self, cfg, split='train', use_ram_cache=True):
         self.cfg = cfg
         self.split = split
         self.pairs = get_split_pairs(cfg, split)
         self.ps = cfg['patch']['packed_patch_size']
         self.augment = cfg['patch'].get('augment', True) and split == 'train'
         self.ratio_cap = cfg['data'].get('ratio_cap', 300.0)
+        
+        # In-memory RAM cache to completely eliminate disk I/O after epoch 1
+        self.use_ram_cache = use_ram_cache
+        self.ram_cache = {}
 
     def __len__(self):
         return len(self.pairs)
 
+    def _load_image(self, path, is_npy=False):
+        if self.use_ram_cache and path in self.ram_cache:
+            return self.ram_cache[path]
+
+        if is_npy:
+            # Load as float32 but we don't duplicate the load check anymore
+            data = np.load(path, allow_pickle=False)
+        else:
+            # Load as uint16, DO NOT convert to float32 yet
+            data = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+            data = cv2.cvtColor(data, cv2.COLOR_BGR2RGB)
+
+        if self.use_ram_cache:
+            self.ram_cache[path] = data
+        return data
+
     def __getitem__(self, idx):
         sb, lb = self.pairs[idx]
-        paths = ensure_cache_for_pair(sb, lb, self.cfg, build_missing=True)
+        d = self.cfg['data']
+        root = d['data_root']
 
-        packed = np.load(paths['packed_path'], allow_pickle=False).astype(np.float32)  # (h, w, 4), unamplified
-        ratio = compute_ratio(paths['short_path'], paths['long_path'], self.ratio_cap)
-        x = np.minimum(packed * ratio, 1.0)
+        # Construct paths directly to bypass the redundant disk validation
+        packed_path = os.path.join(root, d['packed_cache_dirname'], os.path.splitext(sb)[0] + '.npy')
+        short_rgb_path = os.path.join(root, d['short_rgb_dirname'], os.path.splitext(sb)[0] + '.png')
+        long_rgb_path = os.path.join(root, d['long_rgb_dirname'], os.path.splitext(lb)[0] + '.png')
+        short_path = os.path.join(root, d['short_dirname'], sb)
+        long_path = os.path.join(root, d['long_dirname'], lb)
 
-        y_bgr = cv2.imread(paths['long_rgb_path'], cv2.IMREAD_UNCHANGED)
-        cond_bgr = cv2.imread(paths['short_rgb_path'], cv2.IMREAD_UNCHANGED)
-        y = cv2.cvtColor(y_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 65535.0
-        cond = cv2.cvtColor(cond_bgr, cv2.COLOR_BGR2RGB).astype(np.float32) / 65535.0
+        # Load from RAM cache or disk
+        packed = self._load_image(packed_path, is_npy=True)
+        y_uint16 = self._load_image(long_rgb_path, is_npy=False)
+        cond_uint16 = self._load_image(short_rgb_path, is_npy=False)
+
+        ratio = compute_ratio(short_path, long_path, self.ratio_cap)
 
         if self.split == 'train':
-            x, y, cond = self._crop_and_augment(x, y, cond)
+            # CROP FIRST: Only process the pixels we actually need
+            ps = min(self.ps, packed.shape[0], packed.shape[1])
+            top = random.randint(0, packed.shape[0] - ps)
+            left = random.randint(0, packed.shape[1] - ps)
+
+            packed_crop = packed[top:top + ps, left:left + ps, :]
+            y_crop = y_uint16[top * 2:top * 2 + ps * 2, left * 2:left * 2 + ps * 2, :]
+            cond_crop = cond_uint16[top * 2:top * 2 + ps * 2, left * 2:left * 2 + ps * 2, :]
+
+            # CONVERT LATER: Now convert just the tiny cropped patch to float32
+            x = np.minimum(packed_crop * ratio, 1.0)
+            y = y_crop.astype(np.float32) / 65535.0
+            cond = cond_crop.astype(np.float32) / 65535.0
+
+            if self.augment:
+                if random.random() < 0.5:
+                    x, y, cond = x[:, ::-1, :], y[:, ::-1, :], cond[:, ::-1, :]
+                if random.random() < 0.5:
+                    x, y, cond = x[::-1, :, :], y[::-1, :, :], cond[::-1, :, :]
+                if random.random() < 0.5:
+                    x, y, cond = x.transpose(1, 0, 2), y.transpose(1, 0, 2), cond.transpose(1, 0, 2)
+        else:
+            # Val logic remains the same (needs full image)
+            x = np.minimum(packed * ratio, 1.0)
+            y = y_uint16.astype(np.float32) / 65535.0
+            cond = cond_uint16.astype(np.float32) / 65535.0
 
         x = torch.from_numpy(np.ascontiguousarray(x.transpose(2, 0, 1)))
         y = torch.from_numpy(np.ascontiguousarray(y.transpose(2, 0, 1)))
         cond = torch.from_numpy(np.ascontiguousarray(cond.transpose(2, 0, 1)))
+        
         return {'x': x, 'y': y, 'cond': cond, 'ratio': ratio,
-                'short_path': paths['short_path'], 'long_path': paths['long_path']}
-
-    def _crop_and_augment(self, x, y, cond):
-        ps = min(self.ps, x.shape[0], x.shape[1])
-        top = random.randint(0, x.shape[0] - ps)
-        left = random.randint(0, x.shape[1] - ps)
-        x = x[top:top + ps, left:left + ps, :]
-        y = y[top * 2:top * 2 + ps * 2, left * 2:left * 2 + ps * 2, :]
-        cond = cond[top * 2:top * 2 + ps * 2, left * 2:left * 2 + ps * 2, :]
-
-        if self.augment:
-            if random.random() < 0.5:
-                x, y, cond = x[:, ::-1, :], y[:, ::-1, :], cond[:, ::-1, :]
-            if random.random() < 0.5:
-                x, y, cond = x[::-1, :, :], y[::-1, :, :], cond[::-1, :, :]
-            if random.random() < 0.5:
-                x, y, cond = x.transpose(1, 0, 2), y.transpose(1, 0, 2), cond.transpose(1, 0, 2)
-        return x, y, cond
+                'short_path': short_path, 'long_path': long_path}
 
 
 # =============================================================================
@@ -627,7 +659,8 @@ def main():
 
     train_ds = SIDDataset(cfg, split='train')
     val_ds = SIDDataset(cfg, split='val')
-    num_workers = max(0, min(2, int(cfg['train'].get('num_workers', 0))))
+    default_workers = max(1, os.cpu_count() // 2)
+    num_workers = int(cfg['train'].get('num_workers', default_workers))
     print(f"[data] using {num_workers} DataLoader worker(s)")
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True,
                                num_workers=num_workers, pin_memory=True, drop_last=True)
@@ -661,20 +694,26 @@ def main():
             y = batch['y'].to(device, non_blocking=True)
             cond = batch['cond'].to(device, non_blocking=True)
 
+            # --- Shared G Forward Pass ---
+            # Run the generator once. 
+            fake = G(x)
+
             # --- D step ---
             opt_D.zero_grad()
-            with torch.no_grad():
-                fake_detached = G(x)
             d_real = D(cond, y)
-            d_fake = D(cond, fake_detached)
+            
+            # Use .detach() here so gradients don't flow back into G during D's step
+            d_fake = D(cond, fake.detach()) 
+            
             loss_d = losses.d_loss(d_real, d_fake)
             loss_d.backward()
             opt_D.step()
 
             # --- G step ---
             opt_G.zero_grad()
-            fake = G(x)
-            d_fake_for_g = D(cond, fake)
+            
+            # Feed the exact same 'fake' (still attached to the graph) to D
+            d_fake_for_g = D(cond, fake) 
             loss_g, parts = losses.g_loss(d_fake_for_g, fake, y)
             loss_g.backward()
             opt_G.step()
