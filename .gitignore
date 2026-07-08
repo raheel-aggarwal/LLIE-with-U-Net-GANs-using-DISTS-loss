@@ -3,3 +3,6 @@ Sony/short
 Sony/short_rgb
 Sony/long_rgb
 Sony/short_packed_cache
+
+runs/sony_default/models
+runs/sony_default/tb_logs

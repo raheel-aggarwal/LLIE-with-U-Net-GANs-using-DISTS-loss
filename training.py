@@ -226,13 +226,6 @@ def _packed_cache_is_valid(path):
     return isinstance(arr, np.ndarray) and arr.ndim == 3 and arr.shape[2] == 4
 
 
-def _image_cache_is_valid(path):
-    if not os.path.isfile(path):
-        return False
-    img = cv2.imread(path, cv2.IMREAD_UNCHANGED)
-    return img is not None and img.size > 0
-
-
 def ensure_cache_for_pair(short_base, long_base, cfg, build_missing=True):
     """Make sure the packed-.npy cache (short) and the sRGB .png caches
     (short + long) exist on disk for one pair, mirroring short/ and long/
@@ -261,16 +254,10 @@ def ensure_cache_for_pair(short_base, long_base, cfg, build_missing=True):
                 os.remove(packed_path)
             print(f"[cache] rebuilding packed cache {packed_path}")
             _atomic_save_npy(packed_path, pack_raw_file(short_path, bl, wl).astype(np.float32))
-        if not _image_cache_is_valid(short_rgb_path):
-            if os.path.isfile(short_rgb_path):
-                os.remove(short_rgb_path)
-            print(f"[cache] rebuilding short RGB cache {short_rgb_path}")
+        if not os.path.isfile(short_rgb_path):
             srgb = demosaic_to_srgb_u16(short_path)
             _atomic_imwrite(short_rgb_path, cv2.cvtColor(srgb, cv2.COLOR_RGB2BGR))
-        if not _image_cache_is_valid(long_rgb_path):
-            if os.path.isfile(long_rgb_path):
-                os.remove(long_rgb_path)
-            print(f"[cache] rebuilding long RGB cache {long_rgb_path}")
+        if not os.path.isfile(long_rgb_path):
             lrgb = demosaic_to_srgb_u16(long_path)
             _atomic_imwrite(long_rgb_path, cv2.cvtColor(lrgb, cv2.COLOR_RGB2BGR))
 
