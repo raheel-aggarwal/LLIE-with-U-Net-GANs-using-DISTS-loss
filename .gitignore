@@ -6,3 +6,8 @@ Sony/short_packed_cache
 
 runs/sony_default/models
 runs/sony_default/tb_logs
+
+__pycache__/
+*.pyc
+
+runs/
