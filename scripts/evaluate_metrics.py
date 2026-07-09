@@ -53,6 +53,41 @@ try:
 except ImportError:
     _DISTS_AVAILABLE = False
 
+
+def get_model_cache_dir():
+    model_dir = os.environ.get('MODEL_DIR')
+    if not model_dir:
+        return None
+    cache_dir = os.path.join(model_dir, 'lpips')
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
+
+
+def get_lpips_model(device='cpu', cache_dir=None):
+    if lpips_lib is None:
+        raise RuntimeError("The 'lpips' package is required for this script but is not installed.")
+
+    if cache_dir is None:
+        cache_dir = get_model_cache_dir()
+
+    if cache_dir is not None:
+        print(f"[eval] using LPIPS cache dir: {cache_dir}")
+        return lpips_lib.LPIPS(net='alex', model_path=cache_dir).to(device)
+    return lpips_lib.LPIPS(net='alex').to(device)
+
+
+def get_dists_model(device='cpu', cache_dir=None):
+    if not _DISTS_AVAILABLE:
+        return None
+
+    if cache_dir is None:
+        cache_dir = get_model_cache_dir()
+
+    if cache_dir is not None:
+        print(f"[eval] using DISTS cache dir: {cache_dir}")
+        return DISTS_pytorch.DISTS(model_path=cache_dir).to(device)
+    return DISTS_pytorch.DISTS().to(device)
+
 try:
     from pytorch_fid.fid_score import calculate_fid_given_paths
     _FID_AVAILABLE = True
@@ -308,9 +343,8 @@ def main():
                 if sid is not None:
                     input_by_scene.setdefault(sid, []).append(f)
 
-    if lpips_lib is None:
-        raise RuntimeError("The 'lpips' package is required for this script but is not installed.")
-    lpips_model = lpips_lib.LPIPS(net=args.lpips_net).to(device)
+    cache_dir = get_model_cache_dir()
+    lpips_model = get_lpips_model(device=device, cache_dir=cache_dir)
 
     dists_model = None
     if 'dists' in extra:
@@ -318,7 +352,7 @@ def main():
             print("[warn] --extra_metrics includes 'dists' but the DISTS_pytorch package isn't installed "
                   "— skipping DISTS (pip install DISTS-pytorch to enable).")
         else:
-            dists_model = DISTS_pytorch.DISTS().to(device)
+            dists_model = get_dists_model(device=device, cache_dir=cache_dir)
 
     matches = build_matches(gt_files, gen_files, args.match_mode)
 

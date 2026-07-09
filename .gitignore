@@ -9,8 +9,11 @@ scripts/__pycache__
 
 runs/default/models
 runs/default/tb_logs
+runs/default/latest.pt
 
 job.test.out
 job.test.err
 
 batch_run.sh
+
+results

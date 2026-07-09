@@ -15,4 +15,6 @@ cd ~/workspace/LLIE-replication
 source ~/.bashrc
 conda activate llie
 
-python scripts/training.py --config config.yaml --skip_cache_check
+# python scripts/training.py --config config.yaml --skip_cache_check
+# python scripts/inference.py --model_path runs/default/models/best.pt --config config.yaml --output_dir results
+python scripts/evaluate_metrics.py --gen_dir results

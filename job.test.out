@@ -1,5 +1,7 @@
 [device] using cuda
-[data] train pairs: 1865 | val pairs: 234
-[cache] Skipping cache check.
-[data] using 16 DataLoader worker(s)
-[warmup] G-only pretrain (no adversarial term) for the first 3 epoch(s)
+[data] ground truth dir: ./Sony/long
+[data] generated dir:    results
+[data] 231 ground-truth files, 562 generated images, match_mode=scene
+[eval] using LPIPS cache dir: /home/irohs/24b2478/workspace/models/lpips
+Setting up [LPIPS] perceptual loss: trunk [alex], v[0.1], spatial [off]
+Loading model from: /home/irohs/24b2478/workspace/models/lpips
