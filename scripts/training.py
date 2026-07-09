@@ -32,6 +32,8 @@ import glob
 import time
 import random
 import argparse
+import subprocess
+import sys
 
 import numpy as np
 import cv2
@@ -46,9 +48,7 @@ try:
 except ImportError:
     rawpy = None
 
-from pytorch_msssim import MS_SSIM
-from skimage.metrics import peak_signal_noise_ratio as sk_psnr
-from skimage.metrics import structural_similarity as sk_ssim
+from pytorch_msssim import MS_SSIM, ssim as compute_ssim_metric
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -284,14 +284,14 @@ def prepare_cache(pairs_by_split, cfg):
 
 
 class SIDDataset(Dataset):
-    def __init__(self, cfg, split='train', use_ram_cache=True):
+    def __init__(self, cfg, split='train', use_ram_cache=False):
         self.cfg = cfg
         self.split = split
         self.pairs = get_split_pairs(cfg, split)
         self.ps = cfg['patch']['packed_patch_size']
         self.augment = cfg['patch'].get('augment', True) and split == 'train'
         self.ratio_cap = cfg['data'].get('ratio_cap', 300.0)
-        
+
         # In-memory RAM cache to completely eliminate disk I/O after epoch 1
         self.use_ram_cache = use_ram_cache
         self.ram_cache = {}
@@ -365,7 +365,7 @@ class SIDDataset(Dataset):
         x = torch.from_numpy(np.ascontiguousarray(x.transpose(2, 0, 1)))
         y = torch.from_numpy(np.ascontiguousarray(y.transpose(2, 0, 1)))
         cond = torch.from_numpy(np.ascontiguousarray(cond.transpose(2, 0, 1)))
-        
+
         return {'x': x, 'y': y, 'cond': cond, 'ratio': ratio,
                 'short_path': short_path, 'long_path': long_path}
 
@@ -521,34 +521,129 @@ class GANLosses:
         return (self.bce(d_real_logits, torch.ones_like(d_real_logits)) +
                 self.bce(d_fake_logits, torch.zeros_like(d_fake_logits)))
 
-    def g_loss(self, d_fake_logits, fake, real):
+    def g_loss(self, d_fake_logits, fake, real, adv_weight=1.0):
         # NOTE: fake is used un-clamped here by design (plan §6.5d — clamping
         # is only for logging/visualization, not inside the loss).
+        # adv_weight is 0.0 during the G-only pretrain epochs (see
+        # `loss.adv_warmup_epochs` in config) so D's judgment doesn't push on
+        # G before G has learned basic reconstruction. D keeps training on
+        # real-vs-fake throughout regardless (see main()), only G's use of
+        # that signal is gated.
         adv = self.bce(d_fake_logits, torch.ones_like(d_fake_logits))
         l1 = F.l1_loss(fake, real)
         ms = 1.0 - self.ms_ssim(fake, real)
         rec = self.lambda_l1 * l1 + self.lambda_ms * ms
-        total = self.lambda_adv * adv + self.lambda_total * rec
+        total = adv_weight * self.lambda_adv * adv + self.lambda_total * rec
         return total, {'adv': adv.item(), 'l1': l1.item(), 'ms_ssim': ms.item(), 'total': total.item()}
+
+
+# =============================================================================
+# LR warmup
+# =============================================================================
+def warmup_scaled_step(optimizer, warmup_factor):
+    """Run one optimizer.step() with its LR temporarily scaled down by
+    `warmup_factor` (linear 0 -> 1 over the first `warmup_steps` steps —
+    see main()), then restore the optimizer's LR immediately afterward.
+
+    This is deliberately NOT a second LR scheduler (e.g. a per-step
+    LambdaLR) stacked on top of the per-epoch CosineAnnealingLR already in
+    use below. Torch's CosineAnnealingLR computes each epoch's new LR
+    incrementally from whatever the optimizer's *current* param_group['lr']
+    already is (see its get_lr()); a LambdaLR stepped every batch would
+    permanently overwrite that value with base_lr * lambda(step) each time,
+    which — once warmup_steps is passed and the lambda pins at 1.0 — would
+    silently reset the LR back to the undecayed base_lr on every single
+    batch, cancelling out the cosine decay entirely. Scaling down only for
+    the instant of this update and then restoring leaves the optimizer's LR
+    (and therefore the cosine scheduler's bookkeeping) untouched, so warmup
+    and cosine decay compose correctly regardless of how warmup_steps
+    relates to epoch length. It also means resume needs no extra scheduler
+    state: warmup_factor is derived fresh from global_step every call.
+    """
+    if warmup_factor >= 1.0:
+        optimizer.step()
+        return
+    saved_lrs = [pg['lr'] for pg in optimizer.param_groups]
+    for pg in optimizer.param_groups:
+        pg['lr'] = pg['lr'] * warmup_factor
+    optimizer.step()
+    for pg, lr in zip(optimizer.param_groups, saved_lrs):
+        pg['lr'] = lr
+
+
+# =============================================================================
+# Validation
+# =============================================================================
+@torch.no_grad()
+def run_validation(G, val_loader, device):
+    """Run the generator over the full validation set (val_loader yields
+    full, uncropped images — see SIDDataset.__getitem__, split != 'train')
+    and return (mean PSNR in dB, mean SSIM), averaged per-image.
+
+    Used by validate.py after loading a checkpoint's generator weights.
+    """
+    was_training = G.training
+    G.eval()
+
+    psnr_total = 0.0
+    ssim_total = 0.0
+    n = 0
+
+    for batch in val_loader:
+        x = batch['x'].to(device, non_blocking=True)
+        y = batch['y'].to(device, non_blocking=True)
+
+        fake = G(x).clamp(0, 1)
+
+        mse = F.mse_loss(fake, y, reduction='mean').item()
+        psnr = 10.0 * np.log10(1.0 / max(mse, 1e-10))
+
+        batch_ssim = compute_ssim_metric(fake, y, data_range=1.0, size_average=True).item()
+
+        psnr_total += psnr
+        ssim_total += batch_ssim
+        n += 1
+
+    if was_training:
+        G.train()
+
+    if n == 0:
+        return 0.0, 0.0
+
+    return psnr_total / n, ssim_total / n
 
 
 # =============================================================================
 # Checkpoint I/O
 # =============================================================================
-def save_checkpoint(path, epoch, G, D, opt_G, opt_D, best_metric):
+def save_checkpoint(path, epoch, G, D, opt_G, opt_D, scheduler_G, scheduler_D, best_metric):
     torch.save({'epoch': epoch, 'G': G.state_dict(), 'D': D.state_dict(),
                 'opt_G': opt_G.state_dict(), 'opt_D': opt_D.state_dict(),
+                'scheduler_G': scheduler_G.state_dict() if scheduler_G else None,
+                'scheduler_D': scheduler_D.state_dict() if scheduler_D else None,
                 'best_metric': best_metric}, path)
 
 
-def load_checkpoint(path, G, D, opt_G=None, opt_D=None, map_location='cpu'):
-    ckpt = torch.load(path, map_location=map_location)
+def load_checkpoint(path, G, D=None, opt_G=None, opt_D=None, scheduler_G=None, scheduler_D=None,
+                     map_location='cpu'):
+    # NOTE: previously scheduler_G/scheduler_D had no default values, which is
+    # a SyntaxError in Python once a preceding parameter (opt_D) has one —
+    # every parameter after the first defaulted one must also have a default.
+    # validate.py calls this as load_checkpoint(path, G, D=None, map_location=device),
+    # relying on opt_G/opt_D/scheduler_G/scheduler_D all defaulting to None.
+    ckpt = torch.load(path, map_location=map_location, weights_only=True)
     G.load_state_dict(ckpt['G'])
-    D.load_state_dict(ckpt['D'])
+    if D is not None:
+        D.load_state_dict(ckpt['D'])
     if opt_G is not None and 'opt_G' in ckpt:
         opt_G.load_state_dict(ckpt['opt_G'])
     if opt_D is not None and 'opt_D' in ckpt:
         opt_D.load_state_dict(ckpt['opt_D'])
+    if scheduler_G is not None and ckpt.get("scheduler_G") is not None:
+        scheduler_G.load_state_dict(ckpt["scheduler_G"])
+    if scheduler_D is not None and ckpt.get("scheduler_D") is not None:
+        scheduler_D.load_state_dict(ckpt["scheduler_D"])
+
     return ckpt.get('epoch', 0), ckpt.get('best_metric', None)
 
 
@@ -585,21 +680,6 @@ def save_sample_triptych(cond, fake, real, out_dir, epoch, step, max_side=768):
     cv2.imwrite(os.path.join(out_dir, f'epoch{epoch:04d}_step{step:07d}.png'), triptych)
 
 
-def run_validation(G, val_loader, device):
-    G.eval()
-    psnrs, ssims = [], []
-    with torch.no_grad():
-        for batch in val_loader:
-            x, y = batch['x'].to(device), batch['y'].to(device)
-            fake = G(x).clamp(0, 1)
-            fake_np = fake[0].cpu().numpy().transpose(1, 2, 0)
-            y_np = y[0].cpu().numpy().transpose(1, 2, 0)
-            psnrs.append(sk_psnr(y_np, fake_np, data_range=1.0))
-            ssims.append(sk_ssim(y_np, fake_np, data_range=1.0, channel_axis=2))
-    G.train()
-    return float(np.mean(psnrs)), float(np.mean(ssims))
-
-
 # =============================================================================
 # Config / CLI
 # =============================================================================
@@ -620,6 +700,7 @@ def parse_args():
     p.add_argument('--no_resume', action='store_true', help="ignore any existing checkpoint, start fresh")
     p.add_argument('--prepare_cache_only', action='store_true', help="just build the disk cache, then exit")
     p.add_argument('--device', default=None)
+    p.add_argument('--skip_cache_check', action='store_true')
     return p.parse_args()
 
 
@@ -643,28 +724,32 @@ def main():
 
     output_dir = cfg['train']['output_dir']
     models_dir = os.path.join(output_dir, 'models')
+    checkpoints_dir = os.path.join(models_dir, 'checkpoints')
     samples_dir = os.path.join(output_dir, 'samples')
     os.makedirs(models_dir, exist_ok=True)
+    os.makedirs(checkpoints_dir, exist_ok=True)
     os.makedirs(samples_dir, exist_ok=True)
     writer = SummaryWriter(os.path.join(output_dir, 'tb_logs')) if SummaryWriter is not None else None
 
     train_pairs = get_split_pairs(cfg, 'train')
     val_pairs = get_split_pairs(cfg, 'val')
     print(f"[data] train pairs: {len(train_pairs)} | val pairs: {len(val_pairs)}")
-    prepare_cache({'train': train_pairs, 'val': val_pairs}, cfg)
+    if args.skip_cache_check:
+        print("[cache] Skipping cache check.")
+    else:
+        print("[cache] Checking/preparing cache...")
+        prepare_cache({'train': train_pairs, 'val': val_pairs}, cfg)
 
     if args.prepare_cache_only:
         print("[cache] --prepare_cache_only set, exiting after cache build.")
         return
 
     train_ds = SIDDataset(cfg, split='train')
-    val_ds = SIDDataset(cfg, split='val')
     default_workers = max(1, os.cpu_count() // 2)
     num_workers = int(cfg['train'].get('num_workers', default_workers))
     print(f"[data] using {num_workers} DataLoader worker(s)")
     train_loader = DataLoader(train_ds, batch_size=cfg['train']['batch_size'], shuffle=True,
                                num_workers=num_workers, pin_memory=True, drop_last=True)
-    val_loader = DataLoader(val_ds, batch_size=1, shuffle=False, num_workers=0)
 
     mc = cfg['model']
     G = AttentionUNetGenerator(in_channels=mc['in_channels'],
@@ -678,51 +763,104 @@ def main():
     opt_D = torch.optim.Adam(D.parameters(), lr=oc['lr_d'], betas=(oc['beta1'], oc['beta2']))
     losses = GANLosses(cfg, device)
 
-    start_epoch, best_psnr = 1, -1.0
+    # LR warmup: ramp 0 -> lr_g/lr_d (linearly) over the first `warmup_steps`
+    # optimizer steps. See warmup_scaled_step() for why this isn't a second
+    # LR scheduler stacked on the cosine one below.
+    warmup_steps = oc.get('warmup_steps', 0)
+    if warmup_steps > 0:
+        print(f"[warmup] LR warmup over first {warmup_steps} steps")
+
+    # G-only pretrain: no adversarial term for the first `adv_warmup_epochs`
+    # epochs, so G learns basic reconstruction before an untrained/early D's
+    # judgment starts pushing gradients into it. D still trains normally
+    # throughout (see batch loop) — only G's use of D's signal is gated.
+    adv_warmup_epochs = cfg['loss'].get('adv_warmup_epochs', 0)
+    if adv_warmup_epochs > 0:
+        print(f"[warmup] G-only pretrain (no adversarial term) for the first {adv_warmup_epochs} epoch(s)")
+
+    scheduler_G = None
+    scheduler_D = None
+
+    sched_cfg = oc.get("scheduler", {})
+
+    if sched_cfg.get("type", "none").lower() == "cosine":
+        # T_max is expressed in EPOCHS, so the scheduler must be stepped once
+        # per epoch (see the bottom of the training loop below) — not once
+        # per batch/step. Stepping per-batch with an epoch-scaled T_max makes
+        # the LR collapse to eta_min within the first epoch or two.
+        scheduler_G = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt_G,
+            T_max=cfg["train"]["epochs"],
+            eta_min=sched_cfg.get("eta_min", 1e-7),
+        )
+
+        scheduler_D = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt_D,
+            T_max=cfg["train"]["epochs"],
+            eta_min=sched_cfg.get("eta_min", 1e-7),
+        )
+
+    start_epoch = 1
     latest_ckpt = args.resume_path or os.path.join(output_dir, 'latest.pt')
     if cfg['train']['resume'] and os.path.isfile(latest_ckpt):
-        ep, best = load_checkpoint(latest_ckpt, G, D, opt_G, opt_D, map_location=device)
-        start_epoch, best_psnr = ep + 1, (best if best is not None else -1.0)
+        ep, best = load_checkpoint(latest_ckpt, G, D, opt_G, opt_D, scheduler_G, scheduler_D, map_location=device)
+        start_epoch = ep + 1
         print(f"[resume] loaded {latest_ckpt}, continuing from epoch {start_epoch}")
 
     global_step = (start_epoch - 1) * len(train_loader)
+    prev_validator = None
+
     for epoch in range(start_epoch, cfg['train']['epochs'] + 1):
         G.train(); D.train()
         t0 = time.time()
+
+        # Hard-switch: 0.0 for the pretrain epochs, 1.0 from then on. (A
+        # linear ramp over a couple epochs is an easy follow-up if the switch
+        # epoch shows a visible hiccup in loss/sample quality, but hard-
+        # switch is simpler and standard practice, so that's the default.)
+        adv_weight = 1.0 if epoch > adv_warmup_epochs else 0.0
+        if epoch == adv_warmup_epochs + 1 and adv_warmup_epochs > 0:
+            print(f"[warmup] epoch {epoch}: adversarial term now enabled")
+
         for batch in train_loader:
             x = batch['x'].to(device, non_blocking=True)
             y = batch['y'].to(device, non_blocking=True)
             cond = batch['cond'].to(device, non_blocking=True)
 
+            warmup_factor = 1.0 if warmup_steps <= 0 else min(1.0, (global_step + 1) / warmup_steps)
+
             # --- Shared G Forward Pass ---
-            # Run the generator once. 
+            # Run the generator once.
             fake = G(x)
 
             # --- D step ---
             opt_D.zero_grad()
             d_real = D(cond, y)
-            
+
             # Use .detach() here so gradients don't flow back into G during D's step
-            d_fake = D(cond, fake.detach()) 
-            
+            d_fake = D(cond, fake.detach())
+
             loss_d = losses.d_loss(d_real, d_fake)
             loss_d.backward()
-            opt_D.step()
+            warmup_scaled_step(opt_D, warmup_factor)
 
             # --- G step ---
             opt_G.zero_grad()
-            
+
             # Feed the exact same 'fake' (still attached to the graph) to D
-            d_fake_for_g = D(cond, fake) 
-            loss_g, parts = losses.g_loss(d_fake_for_g, fake, y)
+            d_fake_for_g = D(cond, fake)
+            loss_g, parts = losses.g_loss(d_fake_for_g, fake, y, adv_weight=adv_weight)
             loss_g.backward()
-            opt_G.step()
+            warmup_scaled_step(opt_G, warmup_factor)
 
             global_step += 1
             if global_step % cfg['train']['log_every'] == 0:
+                warmup_tag = f" | lr_warmup x{warmup_factor:.3f}" if warmup_factor < 1.0 else ""
+                adv_tag = " | adv OFF (pretrain)" if adv_weight == 0.0 else ""
                 print(f"epoch {epoch} step {global_step} | D {loss_d.item():.4f} | "
                       f"G {parts['total']:.4f} (adv {parts['adv']:.4f} "
-                      f"l1 {parts['l1']:.4f} ms {parts['ms_ssim']:.4f})")
+                      f"l1 {parts['l1']:.4f} ms {parts['ms_ssim']:.4f})"
+                      f"{warmup_tag}{adv_tag}")
                 if writer:
                     writer.add_scalar('loss/D', loss_d.item(), global_step)
                     writer.add_scalar('loss/G_total', parts['total'], global_step)
@@ -733,23 +871,60 @@ def main():
             if global_step % cfg['train']['sample_every'] == 0:
                 save_sample_triptych(cond, fake, y, samples_dir, epoch, global_step)
 
+        # --- LR schedulers: stepped once per EPOCH, matching T_max above ---
+        # (moved out of the batch loop — was previously called once per
+        # batch, which collapsed the cosine schedule to eta_min almost
+        # immediately since T_max is expressed in epochs, not steps.)
+        if scheduler_G is not None:
+            scheduler_G.step()
+
+        if scheduler_D is not None:
+            scheduler_D.step()
+
         print(f"[epoch {epoch}] done in {time.time() - t0:.1f}s")
 
-        if epoch % cfg['train']['val_every_epochs'] == 0 or epoch == cfg['train']['epochs']:
-            val_psnr, val_ssim = run_validation(G, val_loader, device)
-            print(f"[val @ epoch {epoch}] PSNR {val_psnr:.3f} dB | SSIM {val_ssim:.4f}")
-            if writer:
-                writer.add_scalar('val/psnr', val_psnr, epoch)
-                writer.add_scalar('val/ssim', val_ssim, epoch)
-            if val_psnr > best_psnr:
-                best_psnr = val_psnr
-                save_generator_hf(G, os.path.join(models_dir, 'best'))
-                print(f"[val] new best PSNR {best_psnr:.3f} dB -> saved models/best")
-
         if epoch % cfg['train']['save_every_epochs'] == 0 or epoch == cfg['train']['epochs']:
-            save_checkpoint(os.path.join(output_dir, 'latest.pt'), epoch, G, D, opt_G, opt_D, best_psnr)
-            save_generator_hf(G, os.path.join(models_dir, f'epoch_{epoch:04d}'))
-            print(f"[ckpt] saved latest.pt + models/epoch_{epoch:04d}")
+            latest_path = os.path.join(output_dir, 'latest.pt')
+            epoch_ckpt = os.path.join(checkpoints_dir, f'epoch_{epoch:04d}.pt')
+
+            print(
+                f"LR_G {opt_G.param_groups[0]['lr']:.2e} "
+                f"LR_D {opt_D.param_groups[0]['lr']:.2e}"
+            )
+
+            save_checkpoint(latest_path, epoch, G, D, opt_G, opt_D, scheduler_G, scheduler_D, None)
+            save_checkpoint(epoch_ckpt, epoch, G, D, opt_G, opt_D, scheduler_G, scheduler_D, None)
+
+            if prev_validator is not None and prev_validator.poll() is None:
+                print("Waiting for previous validator to finish...")
+                ret = prev_validator.wait()
+                if ret != 0:
+                    print(f"[WARNING] Previous validator exited with code {ret} — check its log.")
+
+            print(f"Launching Validator...")
+
+            log_path = os.path.join(output_dir, "val_logs", f"validate_epoch_{epoch:04d}.log")
+            os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+            with open(log_path, "w") as vlog:
+                p = subprocess.Popen(
+                    [sys.executable, "scripts/validate.py", "--config", args.config, "--checkpoint", epoch_ckpt],
+                    stdout=vlog,
+                    stderr=subprocess.STDOUT,
+                )
+
+                prev_validator = p
+
+            print(f"Validator PID = {p.pid}")
+
+            print(f"[ckpt] saved latest.pt + models/epoch_{epoch:04d} + checkpoint")
+
+    if prev_validator is not None:
+        print("Waiting for final validator to finish...")
+        ret = prev_validator.wait()
+        if ret != 0:
+            print(f"[WARNING] Final validator exited with code {ret} — check its log.")
+        print("Final validator finished.")
 
     print("[done] training complete.")
 
