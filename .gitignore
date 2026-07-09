@@ -7,5 +7,10 @@ Sony/short_packed_cache
 scripts/__pycache__
 *.pyc
 
-runs/sony_default/models
-runs/sony_default/tb_logs
+runs/default/models
+runs/default/tb_logs
+
+job.test.out
+job.test.err
+
+batch_run.sh

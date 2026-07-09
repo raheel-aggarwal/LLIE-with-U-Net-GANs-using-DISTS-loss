@@ -1,0 +1,5 @@
+[device] using cuda
+[data] train pairs: 1865 | val pairs: 234
+[cache] Skipping cache check.
+[data] using 16 DataLoader worker(s)
+[warmup] G-only pretrain (no adversarial term) for the first 3 epoch(s)
