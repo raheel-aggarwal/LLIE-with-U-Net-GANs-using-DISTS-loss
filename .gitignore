@@ -4,13 +4,17 @@ Sony/short_rgb
 Sony/long_rgb
 Sony/short_packed_cache
 
-runs/sony_default/models
-runs/sony_default/tb_logs
-
-__pycache__/
+scripts/__pycache__
 *.pyc
 
 runs/
 
 overnight_watchdog.sh
 stop_at_90.sh
+
+job.test.out
+job.test.err
+
+batch_run.sh
+
+results

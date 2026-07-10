@@ -1,0 +1,28 @@
+/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=AlexNet_Weights.IMAGENET1K_V1`. You can also use `weights=AlexNet_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/lpips/lpips.py:107: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  self.load_state_dict(torch.load(model_path, map_location='cpu'), strict=False)
+Traceback (most recent call last):
+  File "/home/irohs/24b2478/workspace/LLIE-replication/scripts/evaluate_metrics.py", line 435, in <module>
+    main()
+  File "/home/irohs/24b2478/workspace/LLIE-replication/scripts/evaluate_metrics.py", line 347, in main
+    lpips_model = get_lpips_model(device=device, cache_dir=cache_dir)
+                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/irohs/24b2478/workspace/LLIE-replication/scripts/evaluate_metrics.py", line 75, in get_lpips_model
+    return lpips_lib.LPIPS(net='alex', model_path=cache_dir).to(device)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/lpips/lpips.py", line 107, in __init__
+    self.load_state_dict(torch.load(model_path, map_location='cpu'), strict=False)          
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/torch/serialization.py", line 1319, in load
+    with _open_file_like(f, "rb") as opened_file:
+         ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/torch/serialization.py", line 659, in _open_file_like
+    return _open_file(name_or_buffer, mode)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/irohs/24b2478/spack/linux-icelake/miniconda3-24.7.1-l7pwbfrk6y6fe5ev3x2npuu7omyj67op/envs/llie/lib/python3.11/site-packages/torch/serialization.py", line 640, in __init__
+    super().__init__(open(name, mode))
+                     ^^^^^^^^^^^^^^^^
+IsADirectoryError: [Errno 21] Is a directory: '/home/irohs/24b2478/workspace/models/lpips'

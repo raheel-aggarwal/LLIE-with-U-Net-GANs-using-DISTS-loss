@@ -43,7 +43,13 @@ optim:
   beta1: 0.9                           # paper, explicit
   beta2: 0.999                         # paper, explicit
 
+  scheduler:
+    type: cosine        # none | cosine
+    eta_min: 1.0e-7
+    warmup_steps: 500
+
 loss:
+  adv_warmup_epochs: 3 
   lambda_l1: 100.0                     # [ASSUMPTION] pix2pix convention
   lambda_ms_ssim: 10.0                 # [ASSUMPTION]
   lambda_rec_total: 1.0                # weight of L_rec block vs L_adv [ASSUMPTION]
@@ -51,10 +57,10 @@ loss:
 
 train:
   seed: 42
-  output_dir: ./runs/sony_default      # models/, samples/, tb_logs/ all live under here
+  output_dir: ./runs/default      # models/, samples/, tb_logs/ all live under here
   epochs: 500                          # paper, explicit
-  batch_size: 4                        # [ASSUMPTION] not specified; fits L40 48GB at 1024^2 GT
-  num_workers: 8
+  batch_size: 4                       # [ASSUMPTION] not specified; fits L40 48GB at 1024^2 GT
+  num_workers: 16
   resume: true                         # resume from <output_dir>/latest.pt if present
 
   log_every: 100                       # steps between scalar log prints / TB writes

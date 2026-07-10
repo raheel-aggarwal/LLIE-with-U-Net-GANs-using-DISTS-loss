@@ -52,6 +52,46 @@ try:
 except ImportError:
     lpips_lib = None
 
+
+def get_lpips_model(device='cpu'):
+    """Load the LPIPS Alex model from a local cache under $MODEL_DIR if possible.
+
+    The lpips package may try to download its pretrained weights on first use.
+    This helper checks a local cache directory first and reuses it on subsequent
+    runs, avoiding repeated downloads.
+    """
+    if lpips_lib is None:
+        print("[eval] lpips not installed — skipping LPIPS, PSNR/SSIM still computed.")
+        return None
+
+    model_dir = os.environ.get('MODEL_DIR')
+    if not model_dir:
+        print("[eval] MODEL_DIR not set — using lpips' default download behavior.")
+        return lpips_lib.LPIPS(net='alex').to(device)
+
+    cache_dir = os.path.join(model_dir, 'lpips')
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # lpips stores its weights under a model-specific folder; prefer a stable
+    # local path if the expected file exists, otherwise let lpips initialize.
+    expected_files = [
+        os.path.join(cache_dir, 'weights.pth'),
+        os.path.join(cache_dir, 'v0.1', 'alex.pth'),
+        os.path.join(cache_dir, 'alex.pth'),
+    ]
+    if any(os.path.isfile(path) for path in expected_files):
+        print(f"[eval] using cached LPIPS weights from {cache_dir}")
+        return lpips_lib.LPIPS(net='alex', model_path=cache_dir).to(device)
+
+    try:
+        print(f"[eval] downloading LPIPS weights to {cache_dir}")
+        model = lpips_lib.LPIPS(net='alex').to(device)
+        print(f"[eval] LPIPS model ready from {cache_dir}")
+        return model
+    except Exception as e:
+        print(f"[eval] failed to initialize LPIPS from {cache_dir}: {e}")
+        return None
+
 try:
     from huggingface_hub import PyTorchModelHubMixin
     _HF_AVAILABLE = True
@@ -413,10 +453,8 @@ def main():
     print(f"[model] loaded generator from {args.model_path}")
 
     lpips_model = None
-    if args.eval and lpips_lib is not None:
-        lpips_model = lpips_lib.LPIPS(net='alex').to(device)
-    elif args.eval and lpips_lib is None:
-        print("[eval] lpips not installed — skipping LPIPS, PSNR/SSIM still computed.")
+    if args.eval:
+        lpips_model = get_lpips_model(device)
 
     results = []
 
