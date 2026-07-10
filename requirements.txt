@@ -30,6 +30,7 @@ scipy==1.14.1
 scikit-image==0.24.0          # PSNR, SSIM
 lpips==0.1.4                  # LPIPS perceptual metric (paper's headline number)
 pytorch-msssim==1.0.0         # MS-SSIM loss term (Eq. 4 in the paper)
+DISTS-pytorch==0.1            # DISTS loss term (scripts/train.py only) — this project's alternate-loss experiment
 
 # --- Image I/O / viz ---
 opencv-python-headless==4.10.0.84

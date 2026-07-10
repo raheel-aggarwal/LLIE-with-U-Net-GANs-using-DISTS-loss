@@ -49,9 +49,10 @@ optim:
     warmup_steps: 500
 
 loss:
-  adv_warmup_epochs: 3 
+  adv_warmup_epochs: 3
   lambda_l1: 100.0                     # [ASSUMPTION] pix2pix convention
   lambda_ms_ssim: 10.0                 # [ASSUMPTION]
+  lambda_dists: 10.0                   # [ASSUMPTION] this project's DISTS-loss experiment (scripts/train.py only); tune freely
   lambda_rec_total: 1.0                # weight of L_rec block vs L_adv [ASSUMPTION]
   lambda_adv: 1.0                      # weight of L_adv in G's total loss
 
