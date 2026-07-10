@@ -12,6 +12,8 @@ runs/
 overnight_watchdog.sh
 stop_at_90.sh
 
+collaborator_results/
+
 job.test.out
 job.test.err
 
