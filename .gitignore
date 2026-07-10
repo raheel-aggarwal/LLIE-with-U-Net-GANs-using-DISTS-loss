@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 
 runs/
+
+overnight_watchdog.sh
+stop_at_90.sh
