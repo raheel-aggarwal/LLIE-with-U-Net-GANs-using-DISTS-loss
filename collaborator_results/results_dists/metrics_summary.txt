@@ -1,0 +1,39 @@
+=======================================================
+Test-set evaluation summary — DISTS-loss model
+562 pairs, Sony SID test split (full coverage)
+=======================================================
+
+PSNR (dB)  — higher is better
+  mean 25.67   std 2.95   min 17.04   max 31.82
+
+SSIM  — [0,1], higher is better
+  mean 0.695   std 0.165   min 0.237   max 0.943
+
+LPIPS  — perceptual distance, lower is better
+  mean 0.537   std 0.202   min 0.193   max 0.962
+
+LOE  — Lightness Order Error vs. original dark input, lower is better
+  mean 314.31   std 226.44   min 67.83   max 993.37
+
+FID  — set-level (one number for all 562 images), lower is better
+  180.68   (562 images — indicative only, not paper-comparable; see baseline
+  summary for full caveat)
+
+=======================================================
+vs. baseline GAN model (collaborator_results/results/)
+=======================================================
+              baseline    DISTS      winner
+  PSNR (dB)    26.07       25.67      baseline
+  SSIM          0.711       0.695     baseline
+  LPIPS         0.492       0.537     baseline (lower better)
+  LOE         322.66      314.31      DISTS (lower better, marginal)
+  FID         172.90      180.68      baseline (lower better)
+
+The DISTS-loss variant is behind the baseline on 4 of 5 metrics here, only
+ahead (marginally) on LOE. Worth a second look before concluding the swap
+underperforms: this is one training run each, not an average over seeds,
+and DISTS trades pixel/structural exactness for texture realism by design
+— the same kind of gap seen between reconstruction-only and adversarial
+models — so it's possible this run needs different loss weighting
+(lambda_dists, lambda_l1/ms_ssim) rather than DISTS being a worse fit
+outright.
