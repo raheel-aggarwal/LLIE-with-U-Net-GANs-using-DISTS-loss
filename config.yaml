@@ -58,7 +58,7 @@ loss:
 
 train:
   seed: 42
-  output_dir: ./runs/default      # models/, samples/, tb_logs/ all live under here
+  output_dir: ./runs/dists      # models/, samples/, tb_logs/ all live under here
   epochs: 500                          # paper, explicit
   batch_size: 4                       # [ASSUMPTION] not specified; fits L40 48GB at 1024^2 GT
   num_workers: 16
