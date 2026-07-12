@@ -58,9 +58,9 @@ loss:
 
 train:
   seed: 42
-  output_dir: ./runs/dists      # models/, samples/, tb_logs/ all live under here
-  epochs: 500                          # paper, explicit
-  batch_size: 4                       # [ASSUMPTION] not specified; fits L40 48GB at 1024^2 GT
+  output_dir: ./runs/dists_2      # models/, samples/, tb_logs/ all live under here
+  epochs: 100                          # paper, explicit
+  batch_size: 4                       # [ASSUMPTION]
   num_workers: 16
   resume: true                         # resume from <output_dir>/latest.pt if present
 
